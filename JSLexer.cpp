@@ -4,12 +4,19 @@
 #include <unordered_set>
 #include <cctype>
 
+// This is the list of token types the lexer can find. I chose enum class so names do not collide.
+// Each type tells how to handle the slice of code later in the parser.
+// For example, if this is a Keyword, we know it is a reserved word.
 enum class TokenType {
     Keyword, Identifier, Number,
     Operator, String, Comment, Punctuation,
     EndOfFile
 };
 
+
+// The Token struct stores the token’s type, the lexeme) and its position (line and column).
+// I added line and column so it is easier to report errors with exact location.
+// This helps debugging code and printing error messages.
 struct Token {
     TokenType type;
     std::string lexeme;
@@ -25,22 +32,38 @@ class Lexer {
     };
 
 public:
+    // Constructor takes the entire input code as a single string and stores it.
+    // I do this such way so lexer be able to read characters one by one later.
+    // The fields pos, line and col are initialized here to start at the beginning.
     Lexer(const std::string& src) : input(src) {}
 
+    // I create a vector tokens to collect all found tokens.
     std::vector<Token> tokenize(bool trace = false) {
         std::vector<Token> tokens;
-
+        
+        // Here I skip whitespace, tabs, and newline characters.
+        // When lexer see '\n', it increase the line counter and reset column to 1.
+        // This is needed so programm correctly track where it is in the file.
         while (pos < input.size()) {
             while (pos < input.size() && isspace(input[pos])) {
                 if (input[pos] == '\n') { ++line; col = 1; }
                 else ++col;
                 ++pos;
             }
-
+            // Check again, because after skipping whitespace programm can be at the end.
             if (pos >= input.size()) break;
-
+            // Reads the current character to decide what to do next.
             char c = input[pos];
-
+            
+            // Here programm check each possible token start:
+            // 1) If we see '+' or '-' followed by a digit, start reading a signed number.
+            // 2) If just a digit, read a number.
+            // 3) If a letter or '_' or '$', read an identifier (or keyword).
+            // 4) If see a quote, I read a string literal.
+            // 5) If  see '/' next to '/' or '*', read a comment.
+            // 6) If it is an operator character, call readOperator.
+            // 7) If it is punctuation (brackets, commas, semicolons), call readPunctuation.
+            // Otherwise just go on to avoid getting stuck on unknown character.
             if ((c == '+' || c == '-') && pos + 1 < input.size() && isdigit(input[pos + 1])) {
                 tokens.push_back(readNumber(trace));
             } else if (isdigit(c)) {
@@ -60,12 +83,15 @@ public:
                 ++col;
             }
         }
-
+        // After finishing all checks, push an EndOfFile token.
         tokens.push_back({ TokenType::EndOfFile, "", line, col });
         return tokens;
     }
 
 private:
+    // This function reads all characters whether they form an identifier or keyword.
+    // I append characters into buf so I can check later if buf is a reserved word.
+    // If buf is in keywords set, I set its type to Keyword, otherwise Identifier.
     Token readIdentifier(bool trace) {
         std::string buf;
         int startCol = col;
@@ -80,6 +106,11 @@ private:
         if (trace) printToken(t);
         return t;
     }
+    // In this function, I implement a determined finite automaton for numbers.
+    // First programm handle the optional sign (SIGN), then various parts: ZERO, INT_PART (integer part), DOT and FRAC_PART (fraction).
+    // Then it handle the exponent (EXP, EXP_SIGN, EXP_NUM). When all characters are read,afther that go to ACCEPT.
+    // This ensures the number has the correct format, for example no leading zeros.
+    // If it see an invalid character (like a letter after digits) throw an error.
     Token readNumber(bool trace) {
         enum class State {
             START, SIGN, ZERO, INT_PART, DOT, FRAC_PART,
@@ -210,7 +241,10 @@ private:
         if (trace) printToken(t);
         return t;
     }
-    
+    // Here programm read the text inside quotes.
+    // The variable quote holds '"' or '\'' to check closing.
+    // If we see '\' before a character, add it and the next character to buf to preserve escapes.
+    // If reach end of file without finding closing quote, throw an error for an unterminated string.
     Token readString(bool trace) {
         std::string buf;
         int startCol = col;
@@ -244,6 +278,11 @@ private:
         return t;
     }
 
+    
+    // readComment handles two types of comments: single-line (//) and multi-line (/* ... */).
+    // For single-line, read  it until the end of the line.
+    // For multi-line, look for the "*/" pair and track line breaks inside.
+    // If programm reach the end of file without closing,   throw an error for an unterminated comment.
     Token readComment(bool trace) {
         std::string buf;
         int startCol = col;
@@ -281,7 +320,9 @@ private:
         return t;
 
     }
-
+    // In this function we read JavaScript operators like =, ==, ===, !=, !==, <, <<, <=, >, >>, >>>, and so on.
+    // we use peek to see the next character without moving pos immediately.
+    // If programm find a multi-character operator (for example "==" or "!=="), advance() adds each character to buf one by one.
     Token readOperator(bool trace) {
         std::string buf;
         int startCol = col;
@@ -319,7 +360,9 @@ private:
         pos++; col++;
         return t;
     }
-
+    // These helper functions return true if the character is in the set of operators or punctuation.
+    // Programm store those characters in strings so I can quickly check membership with find().
+    // This lets choose the correct token-reading function quickly.
     bool isOperatorChar(char c) {
         return std::string("+-*/=<>!&|^%").find(c) != std::string::npos;
     }
@@ -327,7 +370,7 @@ private:
     bool isPunctuation(char c) {
         return std::string("(){}[],;.").find(c) != std::string::npos;
     }
-
+    // This helper function is for trace mode. If trace=true, I print each token in the format [line:column] TYPE 'lexeme'.
         void printToken(const Token& t) {
         std::string type;
         switch (t.type) {
@@ -345,19 +388,10 @@ private:
     }
 };
 
-std::string tokenTypeToString(TokenType type) {
-    switch (type) {
-        case TokenType::Keyword: return "KW";
-        case TokenType::Identifier: return "ID";
-        case TokenType::Number: return "NUM";
-         case TokenType::Operator: return "OP";
-        case TokenType::String: return "STR";
-        case TokenType::Comment: return "CMT";
-        case TokenType::Punctuation: return "PUN";
-        case TokenType::EndOfFile: return "EOF";
-        default: return "UNK";
-    }
-}
+// In main(), I run an infinite loop so the user can input code multiple times.
+// Options: manual input, trace mode input, demo code, or exit.
+// If demo is chosen, console will show hardcoded piece of code 
+// On exception, user get print the error message and return to the mode selection.
 
 int main() {
 while (true) {
