@@ -65,17 +65,17 @@ public:
             // 7) If it is punctuation (brackets, commas, semicolons), call readPunctuation.
             // Otherwise just go on to avoid getting stuck on unknown character.
             if ((c == '+' || c == '-') && pos + 1 < input.size() && isdigit(input[pos + 1])) {
-                tokens.push_back(readNumber(trace));
+                tokens.push_back(readNumberFA(trace));
             } else if (isdigit(c)) {
-                tokens.push_back(readNumber(trace));
+                tokens.push_back(readNumberFA(trace));
             } else if (isalpha(c) || c == '_' || c == '$') {
-                tokens.push_back(readIdentifier(trace));
+                tokens.push_back(readIdentifierFA(trace));
             }else if (c == '"' || c == '\'') {
-                tokens.push_back(readString(trace));
+                tokens.push_back(readStringFA(trace));
             } else if (c == '/' && pos + 1 < input.size() && (input[pos + 1] == '/' || input[pos + 1] == '*')) {
-                tokens.push_back(readComment(trace));
+                tokens.push_back(readCommentFA(trace));
             } else if (isOperatorChar(c)) {
-                tokens.push_back(readOperator(trace));
+                tokens.push_back(readOperatorFA(trace));
             } else if (isPunctuation(c)) {
                 tokens.push_back(readPunctuation(trace));
             }else {
@@ -89,18 +89,52 @@ public:
     }
 
 private:
-    // This function reads all characters whether they form an identifier or keyword.
-    // I append characters into buf so I can check later if buf is a reserved word.
-    // If buf is in keywords set, I set its type to Keyword, otherwise Identifier.
-    Token readIdentifier(bool trace) {
+    // This function reads identifiers and keywords using a small DFA.
+    // We use states: START (before reading), IDENT (reading letters/digits/_/$), ACCEPT (done).
+    Token readIdentifierFA(bool trace) {
+        enum class State { START, IDENT, ACCEPT };
+        State state = State::START;
         std::string buf;
         int startCol = col;
 
-        while (pos < input.size() &&
-               (isalnum(input[pos]) || input[pos] == '_' || input[pos] == '$')) {
-            buf += input[pos++];
-            ++col;
+        while (pos < input.size()) {
+            char c = input[pos];
+            switch (state) {
+                case State::START:
+                    // In START, we expect a letter, '_' or '$' to begin identifier.
+                    // If it matches, we add to buf, move pos, update col, go to IDENT.
+                    if (isalpha(c) || c == '_' || c == '$') {
+                        buf += c;
+                        pos++;
+                        col++;
+                        state = State::IDENT;
+                    } else {
+                        // If not valid start char, go to ACCEPT (should not happen normally).
+                        state = State::ACCEPT;
+                    }
+                    break;
+
+                case State::IDENT:
+                    // In IDENT, we accept letters, digits, '_' and '$'.
+                    // If char matches, add to buf and continue in IDENT.
+                    if (isalnum(c) || c == '_' || c == '$') {
+                        buf += c;
+                        pos++;
+                        col++;
+                    } else {
+                        // When next char is not valid, go to ACCEPT.
+                        state = State::ACCEPT;
+                    }
+                    break;
+
+                case State::ACCEPT:
+                    // We break out when we reach ACCEPT.
+                    goto done;
+            }
         }
+
+    done:
+        // After loop, buf holds full lexeme. Check if it's a keyword.
         TokenType type = keywords.count(buf) ? TokenType::Keyword : TokenType::Identifier;
         Token t = { type, buf, line, startCol };
         if (trace) printToken(t);
@@ -111,7 +145,7 @@ private:
     // Then it handle the exponent (EXP, EXP_SIGN, EXP_NUM). When all characters are read,afther that go to ACCEPT.
     // This ensures the number has the correct format, for example no leading zeros.
     // If it see an invalid character (like a letter after digits) throw an error.
-    Token readNumber(bool trace) {
+    Token readNumberFA(bool trace) {
         enum class State {
             START, SIGN, ZERO, INT_PART, DOT, FRAC_PART,
             EXP, EXP_SIGN, EXP_NUM, ACCEPT, ERROR
@@ -241,37 +275,80 @@ private:
         if (trace) printToken(t);
         return t;
     }
-    // Here programm read the text inside quotes.
-    // The variable quote holds '"' or '\'' to check closing.
-    // If we see '\' before a character, add it and the next character to buf to preserve escapes.
-    // If reach end of file without finding closing quote, throw an error for an unterminated string.
-    Token readString(bool trace) {
+    // This function reads string literals using a DFA.
+    // States: START (see opening quote), IN_STRING (reading content), ESCAPE (after '\'), ACCEPT (closing).
+    Token readStringFA(bool trace) {
+        enum class State { START, IN_STRING, ESCAPE, ACCEPT };
+        State state = State::START;
         std::string buf;
         int startCol = col;
-        char quote = input[pos++];
+        char quote = input[pos];  // store '"' or '\''
+
+        // In START, we consume the opening quote and move to IN_STRING.
+        buf += quote;
+        pos++;
         col++;
-        bool closed = false;
 
         while (pos < input.size()) {
-            char c = input[pos++];
-            col++;
+            char c = input[pos];
+            switch (state) {
+                case State::START:
+                    // After consuming opening quote, go to IN_STRING.
+                    state = State::IN_STRING;
+                    break;
 
-            if (c == '\n') break;
-            if (c == quote) {
-                closed = true;
-                break;
-            }
-            if (c == '\\' && pos < input.size()) {
-                buf += c;
-                buf += input[pos++];
-                col++;
-            } else {
-                buf += c;
+                case State::IN_STRING:
+                    if (c == '\\') {
+                        // If backslash, it's escape start. Add to buf and go to ESCAPE.
+                        buf += c;
+                        pos++;
+                        col++;
+                        state = State::ESCAPE;
+                    }
+                    else if (c == quote) {
+                        // If we see matching quote, add and accept string.
+                        buf += c;
+                        pos++;
+                        col++;
+                        state = State::ACCEPT;
+                    }
+                    else if (c == '\n') {
+                        // Newline inside string without closing - error.
+                        throw std::runtime_error(
+                            "Unterminated string at line " + std::to_string(line) +
+                            ", col " + std::to_string(startCol)
+                        );
+                    }
+                    else {
+                        // Regular character, add and stay in IN_STRING.
+                        buf += c;
+                        pos++;
+                        col++;
+                    }
+                    break;
+
+                case State::ESCAPE:
+                    // After '\' consume next char regardless of what it is.
+                    buf += c;
+                    pos++;
+                    col++;
+                    // Back to IN_STRING to continue.
+                    state = State::IN_STRING;
+                    break;
+
+                case State::ACCEPT:
+                    // Once closing quote found, break out.
+                    goto done;
             }
         }
 
-        if (!closed) {
-            throw std::runtime_error("Unterminated string at line " + std::to_string(line) + ", col " + std::to_string(startCol));
+    done:
+        if (state != State::ACCEPT) {
+            // If EOF reached without closing quote.
+            throw std::runtime_error(
+                "Unterminated string at line " + std::to_string(line) +
+                ", col " + std::to_string(startCol)
+            );
         }
         Token t = { TokenType::String, buf, line, startCol };
         if (trace) printToken(t);
@@ -279,81 +356,304 @@ private:
     }
 
     
-    // readComment handles two types of comments: single-line (//) and multi-line (/* ... */).
-    // For single-line, read  it until the end of the line.
-    // For multi-line, look for the "*/" pair and track line breaks inside.
-    // If programm reach the end of file without closing,   throw an error for an unterminated comment.
-    Token readComment(bool trace) {
+     // This function reads comments (single-line // or multi-line /* */) using a DFA.
+    // States: START (we saw '/'), SLASH (decide / or *), SINGLE (in // comment), MULTI (in /* comment), STAR (saw '*' inside multi), ACCEPT (end).
+    Token readCommentFA(bool trace) {
+        enum class State { START, SLASH, SINGLE, MULTI, STAR, ACCEPT };
+        State state = State::START;
         std::string buf;
         int startCol = col;
 
-        pos++; col++;
+        // We know input[pos] == '/', so add and move to SLASH state.
+        buf += input[pos];
+        pos++;
+        col++;
+        state = State::SLASH;
 
-        if (input[pos] == '/') {
-            pos++; col++;
-            while (pos < input.size() && input[pos] != '\n') {
-                buf += input[pos++];
-                col++;
-            }
-        } else if (input[pos] == '*') {
-            pos++; col++;
-            bool closed = false;
-
-            while (pos + 1 < input.size()) {
-                if (input[pos] == '*' && input[pos + 1] == '/') {
-                    closed = true;
+        while (pos < input.size()) {
+            char c = input[pos];
+            switch (state) {
+                case State::SLASH:
+                    if (c == '/') {
+                        // This is "//" start. Add and go to SINGLE state.
+                        buf += c;
+                        pos++;
+                        col++;
+                        state = State::SINGLE;
+                    }
+                    else if (c == '*') {
+                        // This is "/*" start. Add and go to MULTI state.
+                        buf += c;
+                        pos++;
+                        col++;
+                        state = State::MULTI;
+                    }
+                    else {
+                        // Not a comment after '/', treat '/' alone as operator error.
+                        throw std::runtime_error(
+                            "Unexpected '/' at line " + std::to_string(line) +
+                            ", col " + std::to_string(startCol)
+                        );
+                    }
                     break;
-                }
-                if (input[pos] == '\n') { ++line; col = 1; }
-                else ++col;
-                buf += input[pos++];
-            }
 
-            if (!closed) {
-                throw std::runtime_error("Unterminated comment at line " + std::to_string(line) + ", col " + std::to_string(startCol));
-            }
+                case State::SINGLE:
+                    // In single-line, read until newline or EOF.
+                    if (c == '\n') {
+                        // Do not include newline in comment content.
+                        state = State::ACCEPT;
+                    } else {
+                        buf += c;
+                        pos++;
+                        col++;
+                    }
+                    break;
 
-            pos += 2; col += 2;
+                case State::MULTI:
+                    if (c == '*') {
+                        // Saw '*', might be end "*/". Go to STAR state.
+                        buf += c;
+                        pos++;
+                        col++;
+                        state = State::STAR;
+                    }
+                    else {
+                        // Normal character inside multi-line. Track newlines.
+                        if (c == '\n') {
+                            buf += c;
+                            pos++;
+                            line++;
+                            col = 1;
+                        } else {
+                            buf += c;
+                            pos++;
+                            col++;
+                        }
+                        // Stay in MULTI.
+                    }
+                    break;
+
+                case State::STAR:
+                    if (c == '/') {
+                        // Found closing "*/". Add and accept.
+                        buf += c;
+                        pos++;
+                        col++;
+                        state = State::ACCEPT;
+                    }
+                    else if (c == '*') {
+                        // Another '*' still inside. Stay in STAR.
+                        buf += c;
+                        pos++;
+                        col++;
+                    }
+                    else {
+                        // Not closing, go back to MULTI.
+                        buf += c;
+                        if (c == '\n') {
+                            line++;
+                            col = 1;
+                        } else {
+                            col++;
+                        }
+                        pos++;
+                        state = State::MULTI;
+                    }
+                    break;
+
+                case State::ACCEPT:
+                    // Break out when comment is done.
+                    goto done;
+            }
+        }
+
+    done:
+        // If we ended without ACCEPT state in multi-line, it's unterminated.
+        if (state != State::ACCEPT) {
+            throw std::runtime_error(
+                "Unterminated comment at line " + std::to_string(line) +
+                ", col " + std::to_string(startCol)
+            );
         }
         Token t = { TokenType::Comment, buf, line, startCol };
         if (trace) printToken(t);
         return t;
-
     }
     // In this function we read JavaScript operators like =, ==, ===, !=, !==, <, <<, <=, >, >>, >>>, and so on.
     // we use peek to see the next character without moving pos immediately.
     // If programm find a multi-character operator (for example "==" or "!=="), advance() adds each character to buf one by one.
-    Token readOperator(bool trace) {
-        std::string buf;
-        int startCol = col;
+Token readOperatorFA(bool trace) {
+    enum class State {
+        START,      // before reading any operator
+        GOT_EQ,     // we saw '='
+        GOT_BANG,   // we saw '!'
+        GOT_LT,     // we saw '<'
+        GOT_GT,     // we saw '>'
+        GOT_AND,    // we saw '&'
+        GOT_OR,     // we saw '|'
+        AFTER_GT1,  // we saw ">>"
+        AFTER_GT2,  // we saw ">>>"
+        ACCEPT      // finished reading the operator
+    };
 
-        auto peek = [&](int offset = 0) -> char {
-            return (pos + offset < input.size()) ? input[pos + offset] : '\0';
-        };
+    State state = State::START;
+    std::string buf;
+    int startCol = col;
 
-        auto advance = [&]() {
-            buf += input[pos];
-            pos++; col++;
-        };
+    auto peek = [&](int offset = 0) -> char {
+        // return character at current position + offset, or '\0' if out of range
+        return (pos + offset < input.size()) ? input[pos + offset] : '\0';
+    };
+    auto advance = [&]() {
+        // add current char to buffer, move position and column forward
+        buf += input[pos];
+        pos++;
+        col++;
+    };
 
+    while (pos < input.size()) {
         char c = peek();
-        switch (c) {
-            case '=': advance(); if (peek() == '=') advance(); if (peek() == '=') advance(); break;
-            case '!': advance(); if (peek() == '=') advance(); if (peek() == '=') advance(); break;
-            case '<': advance(); if (peek() == '<') advance(); if (peek() == '=') advance(); break;
-            case '>': advance(); if (peek() == '>') advance(); if (peek() == '>') advance(); if (peek() == '=') advance(); break;
-            case '&': advance(); if (peek() == '&') advance(); break;
-            case '|': advance(); if (peek() == '|') advance(); break;
-            case '+': case '-': case '*': case '/': case '%': case '^':
-                advance(); if (peek() == '=') advance(); break;
-            default:
-                throw std::runtime_error("Unknown operator at line " + std::to_string(line) + ", column " + std::to_string(col));
-        }
+        switch (state) {
+            case State::START:
+                // Here we decide which operator we begin with
+                if (c == '=') {
+                    advance();       // take '='
+                    state = State::GOT_EQ;
+                }
+                else if (c == '!') {
+                    advance();       // take '!'
+                    state = State::GOT_BANG;
+                }
+                else if (c == '<') {
+                    advance();       // take '<'
+                    state = State::GOT_LT;
+                }
+                else if (c == '>') {
+                    advance();       // take '>'
+                    state = State::GOT_GT;
+                }
+                else if (c == '&') {
+                    advance();       // take '&'
+                    state = State::GOT_AND;
+                }
+                else if (c == '|') {
+                    advance();       // take '|'
+                    state = State::GOT_OR;
+                }
+                else if (std::string("+-*/%^").find(c) != std::string::npos) {
+                    // Single-character operators: +, -, *, /, %, ^
+                    advance();
+                    state = State::ACCEPT;
+                }
+                else {
+                    // If we did not match any operator start, throw error
+                    throw std::runtime_error(
+                        "Unknown operator at line " + std::to_string(line) +
+                        ", column " + std::to_string(col)
+                    );
+                }
+                break;
 
-        Token t = { TokenType::Operator, buf, line, startCol };
-        if (trace) printToken(t);
-        return t;
+            case State::GOT_EQ:
+                // After seeing '=', check if next is '=' or '==='
+                if (peek() == '=') {
+                    advance();    // take second '='
+                    if (peek() == '=') {
+                        advance(); // take third '=' for '==='
+                    }
+                }
+                state = State::ACCEPT; // now operator is complete
+                break;
+
+            case State::GOT_BANG:
+                // After seeing '!', check if next is '!=' or '!=='
+                if (peek() == '=') {
+                    advance();    // take '=' for '!='
+                    if (peek() == '=') {
+                        advance(); // take second '=' for '!=='
+                    }
+                }
+                state = State::ACCEPT; // operator is complete
+                break;
+
+            case State::GOT_LT:
+                // After seeing '<', check if next is '<=' or '<<'
+                if (peek() == '<') {
+                    advance();    // take second '<' for '<<'
+                }
+                else if (peek() == '=') {
+                    advance();    // take '=' for '<='
+                }
+                state = State::ACCEPT; // operator is complete
+                break;
+
+            case State::GOT_GT:
+                // After seeing '>', check if next is '>>', '>>>' or '>='
+                if (peek() == '>') {
+                    advance();    // take second '>' for '>>'
+                    state = State::AFTER_GT1;
+                }
+                else if (peek() == '=') {
+                    advance();    // take '=' for '>='
+                    state = State::ACCEPT;
+                }
+                else {
+                    state = State::ACCEPT; // just '>' is done
+                }
+                break;
+
+            case State::AFTER_GT1:
+                // We have '>>'; now check if next is '>>>' or '>>='
+                if (peek() == '>') {
+                    advance();    // take third '>' for '>>>'
+                    state = State::AFTER_GT2;
+                }
+                else if (peek() == '=') {
+                    advance();    // take '=' for '>>='
+                    state = State::ACCEPT;
+                }
+                else {
+                    state = State::ACCEPT; // just '>>' is done
+                }
+                break;
+
+            case State::AFTER_GT2:
+                // We have '>>>'; now check if next is '>>>='
+                if (peek() == '=') {
+                    advance();    // take '=' for '>>>='
+                }
+                state = State::ACCEPT; // done reading
+                break;
+
+            case State::GOT_AND:
+                // After seeing '&', check if next is '&&'
+                if (peek() == '&') {
+                    advance();    // take second '&' for '&&'
+                }
+                state = State::ACCEPT; // done
+                break;
+
+            case State::GOT_OR:
+                // After seeing '|', check if next is '||'
+                if (peek() == '|') {
+                    advance();    // take second '|' for '||'
+                }
+                state = State::ACCEPT; // done
+                break;
+
+            case State::ACCEPT:
+                // When ACCEPT, break out of loop
+                goto done;
+        }
     }
+
+done:
+    // Build the token with collected characters
+    Token t = { TokenType::Operator, buf, line, startCol };
+    if (trace) printToken(t);
+    return t;
+}
+
 
     Token readPunctuation(bool trace) {
         Token t = { TokenType::Punctuation, std::string(1, input[pos]), line, col };
