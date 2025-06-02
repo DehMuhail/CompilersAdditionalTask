@@ -27,7 +27,7 @@ class Lexer {
 public:
     Lexer(const std::string& src) : input(src) {}
 
-    std::vector<Token> tokenize() {
+    std::vector<Token> tokenize(bool trace = false) {
         std::vector<Token> tokens;
 
         while (pos < input.size()) {
@@ -42,19 +42,19 @@ public:
             char c = input[pos];
 
             if ((c == '+' || c == '-') && pos + 1 < input.size() && isdigit(input[pos + 1])) {
-                tokens.push_back(readNumber());
+                tokens.push_back(readNumber(trace));
             } else if (isdigit(c)) {
-                tokens.push_back(readNumber());
+                tokens.push_back(readNumber(trace));
             } else if (isalpha(c) || c == '_' || c == '$') {
-                tokens.push_back(readIdentifier());
+                tokens.push_back(readIdentifier(trace));
             }else if (c == '"' || c == '\'') {
-                tokens.push_back(readString());
+                tokens.push_back(readString(trace));
             } else if (c == '/' && pos + 1 < input.size() && (input[pos + 1] == '/' || input[pos + 1] == '*')) {
-                tokens.push_back(readComment());
+                tokens.push_back(readComment(trace));
             } else if (isOperatorChar(c)) {
-                tokens.push_back(readOperator());
+                tokens.push_back(readOperator(trace));
             } else if (isPunctuation(c)) {
-                tokens.push_back(readPunctuation());
+                tokens.push_back(readPunctuation(trace));
             }else {
                 ++pos;
                 ++col;
@@ -66,7 +66,7 @@ public:
     }
 
 private:
-    Token readIdentifier() {
+    Token readIdentifier(bool trace) {
         std::string buf;
         int startCol = col;
 
@@ -75,11 +75,12 @@ private:
             buf += input[pos++];
             ++col;
         }
-
         TokenType type = keywords.count(buf) ? TokenType::Keyword : TokenType::Identifier;
-        return { type, buf, line, startCol };
+        Token t = { type, buf, line, startCol };
+        if (trace) printToken(t);
+        return t;
     }
-    Token readNumber() {
+    Token readNumber(bool trace) {
         enum class State {
             START, SIGN, ZERO, INT_PART, DOT, FRAC_PART,
             EXP, EXP_SIGN, EXP_NUM, ACCEPT, ERROR
@@ -205,10 +206,12 @@ private:
         if (pos < input.size() && (isalnum(input[pos]) || input[pos] == '_' || input[pos] == '$')) {
             throw std::runtime_error("Invalid token: '" + buf + input[pos] + "' at line " + std::to_string(line) + ", col " + std::to_string(startCol));
         }
-
-        return { TokenType::Number, buf, line, startCol };
+        Token t = { TokenType::Number, buf, line, startCol };
+        if (trace) printToken(t);
+        return t;
     }
-        Token readString() {
+    
+    Token readString(bool trace) {
         std::string buf;
         int startCol = col;
         char quote = input[pos++];
@@ -236,11 +239,12 @@ private:
         if (!closed) {
             throw std::runtime_error("Unterminated string at line " + std::to_string(line) + ", col " + std::to_string(startCol));
         }
-
-        return { TokenType::String, buf, line, startCol };
+        Token t = { TokenType::String, buf, line, startCol };
+        if (trace) printToken(t);
+        return t;
     }
 
-    Token readComment() {
+    Token readComment(bool trace) {
         std::string buf;
         int startCol = col;
 
@@ -272,11 +276,13 @@ private:
 
             pos += 2; col += 2;
         }
+        Token t = { TokenType::Comment, buf, line, startCol };
+        if (trace) printToken(t);
+        return t;
 
-        return { TokenType::Comment, buf, line, startCol };
     }
 
-    Token readOperator() {
+    Token readOperator(bool trace) {
         std::string buf;
         int startCol = col;
 
@@ -303,10 +309,12 @@ private:
                 throw std::runtime_error("Unknown operator at line " + std::to_string(line) + ", column " + std::to_string(col));
         }
 
-        return { TokenType::Operator, buf, line, startCol };
+        Token t = { TokenType::Operator, buf, line, startCol };
+        if (trace) printToken(t);
+        return t;
     }
 
-    Token readPunctuation() {
+    Token readPunctuation(bool trace) {
         Token t = { TokenType::Punctuation, std::string(1, input[pos]), line, col };
         pos++; col++;
         return t;
@@ -318,6 +326,22 @@ private:
 
     bool isPunctuation(char c) {
         return std::string("(){}[],;.").find(c) != std::string::npos;
+    }
+
+        void printToken(const Token& t) {
+        std::string type;
+        switch (t.type) {
+            case TokenType::Keyword: type = "KW"; break;
+            case TokenType::Identifier: type = "ID"; break;
+            case TokenType::Number: type = "NUM"; break;
+            case TokenType::Operator: type = "OP"; break;
+            case TokenType::String: type = "STR"; break;
+            case TokenType::Comment: type = "CMT"; break;
+            case TokenType::Punctuation: type = "PUN"; break;
+            case TokenType::EndOfFile: type = "EOF"; break;
+            default: type = "UNK";
+        }
+        std::cout << "[" << t.line << ":" << t.column << "] " << type << " '" << t.lexeme << "'\n";
     }
 };
 
@@ -336,7 +360,41 @@ std::string tokenTypeToString(TokenType type) {
 }
 
 int main() {
-    std::string input = R"(
+while (true) {
+        std::string code, mode;
+        bool trace = false;
+
+        std::cout << "\n=== JavaScript Lexer ===\n";
+        std::cout << "Select mode:\n";
+        std::cout << "1 = Manual input\n";
+        std::cout << "2 = Trace mode input\n";
+        std::cout << "3 = Demo\n";
+        std::cout << "4 = Exit\n";
+        std::cout << "> ";
+        std::getline(std::cin, mode);
+
+        if (mode == "4") {
+            std::cout << "Exiting...\n";
+            break;
+        }
+
+        if (mode == "1" || mode == "2") {
+            trace = (mode == "2");
+            std::cout << "Enter code (2 empty lines to end):\n";
+            std::string line;
+            int empty = 0;
+
+            while (std::getline(std::cin, line)) {
+                if (line.empty()) {
+                    if (++empty == 2) break;
+                } else {
+                    empty = 0;
+                    code += line + "\n";
+                }
+            }
+        } else if (mode == "3") {
+            trace = true;
+            code = R"(
         let x = -12.5e+3;
         const y = 42; // comment
         /* multi
@@ -345,13 +403,19 @@ int main() {
             console.log("ok");
         }
     )";
-
-    Lexer lexer(input);
-    std::vector<Token> tokens = lexer.tokenize();
-
-    for (const auto& token : tokens) {
-        std::cout << "[" << token.line << ":" << token.column << "] "
-                  << tokenTypeToString(token.type) << " '" << token.lexeme << "'\n";
+        }else {
+            std::cout << "Invalid option. Please choose 1–4.\n";
+            continue;
+        }
+    try {
+        std::cout << "\n--- Source Code ---\n" << code << "\n";
+        Lexer lexer(code);
+        std::vector<Token> tokens = lexer.tokenize(trace);
+    } catch (const std::runtime_error& err) {
+            std::cerr << "[ERROR] " << err.what() << "\n";
+        } catch (...) {
+            std::cerr << "[ERROR] Unknown lexer failure.\n";
+        }
     }
 
     return 0;
